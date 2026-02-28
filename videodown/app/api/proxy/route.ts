@@ -14,18 +14,48 @@ export async function GET(request: NextRequest) {
     // Decode the URL
     const decodedUrl = decodeURIComponent(videoUrl);
 
+    // Validate that it's an absolute URL
+    let absoluteUrl = decodedUrl;
+    if (!decodedUrl.startsWith("http://") && !decodedUrl.startsWith("https://")) {
+      // If it's a relative path, try to prepend tikwm base URL
+      absoluteUrl = `https://www.tikwm.com${decodedUrl.startsWith("/") ? "" : "/"}${decodedUrl}`;
+    }
+
+    // Validate URL format
+    try {
+      new URL(absoluteUrl);
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid URL format", url: absoluteUrl },
+        { status: 400 }
+      );
+    }
+
+    // Determine referer based on URL
+    let referer = "https://www.tiktok.com/";
+    if (absoluteUrl.includes("facebook.com") || absoluteUrl.includes("fbcdn.net")) {
+      referer = "https://www.facebook.com/";
+    } else if (absoluteUrl.includes("twitter.com") || absoluteUrl.includes("twimg.com")) {
+      referer = "https://twitter.com/";
+    } else if (absoluteUrl.includes("threads.net") || absoluteUrl.includes("cdninstagram.com")) {
+      referer = "https://www.threads.net/";
+    } else if (absoluteUrl.includes("tikwm.com")) {
+      referer = "https://www.tikwm.com/";
+    }
+
     // Fetch the video from the source
-    const response = await axios.get(decodedUrl, {
+    const response = await axios.get(absoluteUrl, {
       responseType: "stream",
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Referer: "https://www.tiktok.com/",
+        Referer: referer,
         Accept: "*/*",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": "identity",
         Connection: "keep-alive",
+        Range: "bytes=0-",
       },
-      timeout: 60000,
+      timeout: 120000,
       maxRedirects: 10,
     });
 

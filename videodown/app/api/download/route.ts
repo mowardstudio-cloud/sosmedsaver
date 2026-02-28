@@ -27,10 +27,17 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
     const videoData = data.data;
     const downloads: VideoQuality[] = [];
 
+    // Helper to ensure absolute URL (tikwm sometimes returns relative paths)
+    const toAbsoluteUrl = (u: string) => {
+      if (!u) return u;
+      if (u.startsWith("http://") || u.startsWith("https://")) return u;
+      return `https://www.tikwm.com${u.startsWith("/") ? "" : "/"}${u}`;
+    };
+
     if (videoData.hdplay) {
       downloads.push({
         label: "HD Video (No Watermark)",
-        url: videoData.hdplay,
+        url: toAbsoluteUrl(videoData.hdplay),
         quality: "HD",
         format: "mp4",
       });
@@ -39,7 +46,7 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
     if (videoData.play) {
       downloads.push({
         label: "SD Video (No Watermark)",
-        url: videoData.play,
+        url: toAbsoluteUrl(videoData.play),
         quality: "SD",
         format: "mp4",
       });
@@ -48,7 +55,7 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
     if (videoData.wmplay) {
       downloads.push({
         label: "Video (With Watermark)",
-        url: videoData.wmplay,
+        url: toAbsoluteUrl(videoData.wmplay),
         quality: "SD",
         format: "mp4",
       });
@@ -57,7 +64,7 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
     if (videoData.music) {
       downloads.push({
         label: "Audio Only (MP3)",
-        url: videoData.music,
+        url: toAbsoluteUrl(videoData.music),
         quality: "Audio",
         format: "mp3",
       });
@@ -65,7 +72,7 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
 
     return {
       title: videoData.title || "TikTok Video",
-      thumbnail: videoData.cover || videoData.origin_cover || "",
+      thumbnail: toAbsoluteUrl(videoData.cover || videoData.origin_cover || ""),
       duration: videoData.duration
         ? `${Math.floor(videoData.duration / 60)}:${String(videoData.duration % 60).padStart(2, "0")}`
         : undefined,
