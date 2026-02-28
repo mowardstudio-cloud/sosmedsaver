@@ -1,0 +1,8 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='192' height='192' viewBox='0 0 192 192'>
+  <rect width='192' height='192' rx='38.400000000000006' fill='#0a0a0a'/>
+  <rect x='19.200000000000003' y='19.200000000000003' width='153.60000000000002' height='153.60000000000002' rx='28.799999999999997' fill='#ffffff' opacity='0.05'/>
+  <!-- Download arrow -->
+  <line x1='96' y1='48' x2='96' y2='115.19999999999999' stroke='white' stroke-width='11.52' stroke-linecap='round'/>
+  <polyline points='61.44,92.16 96,124.80000000000001 130.56,92.16' fill='none' stroke='white' stroke-width='11.52' stroke-linecap='round' stroke-linejoin='round'/>
+  <line x1='48' y1='144' x2='144' y2='144' stroke='white' stroke-width='11.52' stroke-linecap='round'/>
+</svg>
