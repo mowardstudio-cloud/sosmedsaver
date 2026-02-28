@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import axios from "axios";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -14,10 +13,10 @@ export async function GET(request: NextRequest) {
     // Decode the URL
     const decodedUrl = decodeURIComponent(videoUrl);
 
-    // Validate that it's an absolute URL
+    // Validate and ensure absolute URL
     let absoluteUrl = decodedUrl;
     if (!decodedUrl.startsWith("http://") && !decodedUrl.startsWith("https://")) {
-      // If it's a relative path, try to prepend tikwm base URL
+      // If it's a relative path, prepend tikwm base URL
       absoluteUrl = `https://www.tikwm.com${decodedUrl.startsWith("/") ? "" : "/"}${decodedUrl}`;
     }
 
@@ -32,20 +31,22 @@ export async function GET(request: NextRequest) {
     }
 
     // Determine referer based on URL
-    let referer = "https://www.tiktok.com/";
+    let referer = "https://www.tikwm.com/";
     if (absoluteUrl.includes("facebook.com") || absoluteUrl.includes("fbcdn.net")) {
       referer = "https://www.facebook.com/";
     } else if (absoluteUrl.includes("twitter.com") || absoluteUrl.includes("twimg.com")) {
       referer = "https://twitter.com/";
     } else if (absoluteUrl.includes("threads.net") || absoluteUrl.includes("cdninstagram.com")) {
       referer = "https://www.threads.net/";
-    } else if (absoluteUrl.includes("tikwm.com")) {
-      referer = "https://www.tikwm.com/";
+    } else if (absoluteUrl.includes("tiktok.com") || absoluteUrl.includes("tiktokcdn")) {
+      referer = "https://www.tiktok.com/";
     }
 
-    // Fetch the video from the source
-    const response = await axios.get(absoluteUrl, {
-      responseType: "stream",
+    // Sanitize filename
+    const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+
+    // Use native fetch to stream the response
+    const response = await fetch(absoluteUrl, {
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -53,18 +54,19 @@ export async function GET(request: NextRequest) {
         Accept: "*/*",
         "Accept-Encoding": "identity",
         Connection: "keep-alive",
-        Range: "bytes=0-",
       },
-      timeout: 120000,
-      maxRedirects: 10,
+      redirect: "follow",
     });
 
-    const contentType =
-      (response.headers["content-type"] as string) || "video/mp4";
-    const contentLength = response.headers["content-length"] as string;
+    if (!response.ok) {
+      return NextResponse.json(
+        { error: `Source returned ${response.status}: ${response.statusText}` },
+        { status: response.status }
+      );
+    }
 
-    // Sanitize filename
-    const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const contentType = response.headers.get("content-type") || "video/mp4";
+    const contentLength = response.headers.get("content-length");
 
     // Build response headers
     const headers: Record<string, string> = {
@@ -78,19 +80,8 @@ export async function GET(request: NextRequest) {
       headers["Content-Length"] = contentLength;
     }
 
-    // Stream the response
-    const stream = response.data as NodeJS.ReadableStream;
-    const chunks: Buffer[] = [];
-
-    await new Promise<void>((resolve, reject) => {
-      stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-      stream.on("end", resolve);
-      stream.on("error", reject);
-    });
-
-    const buffer = Buffer.concat(chunks);
-
-    return new NextResponse(buffer, {
+    // Stream the response body directly
+    return new NextResponse(response.body, {
       status: 200,
       headers,
     });
