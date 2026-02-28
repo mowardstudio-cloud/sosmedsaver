@@ -10,10 +10,27 @@ interface DownloadResultProps {
   data: VideoInfo;
 }
 
-// Thumbnail component with error handling
+// Thumbnail component with error handling and fallback
 function ThumbnailImage({ src, alt }: { src: string; alt: string }) {
   const [error, setError] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [useProxy, setUseProxy] = useState(false);
+
+  // Try direct URL first, fallback to proxy
+  const imgSrc = useProxy
+    ? `/api/image?url=${encodeURIComponent(src)}`
+    : src;
+
+  const handleError = () => {
+    if (!useProxy) {
+      // Try proxy as fallback
+      setUseProxy(true);
+      setLoaded(false);
+    } else {
+      // Both failed, show placeholder
+      setError(true);
+    }
+  };
 
   if (error) {
     return (
@@ -33,11 +50,13 @@ function ThumbnailImage({ src, alt }: { src: string; alt: string }) {
       )}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={`/api/image?url=${encodeURIComponent(src)}`}
+        key={imgSrc}
+        src={imgSrc}
         alt={alt}
         className={`w-full h-full object-cover transition-opacity duration-300 ${loaded ? "opacity-90" : "opacity-0"}`}
         onLoad={() => setLoaded(true)}
-        onError={() => setError(true)}
+        onError={handleError}
+        crossOrigin="anonymous"
       />
       {loaded && (
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
