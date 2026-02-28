@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import Image from "next/image";
-import { Download, Music, Video, Clock, User, ExternalLink } from "lucide-react";
+import { Download, Music, Video, Clock, User, ExternalLink, Loader2, CheckCircle } from "lucide-react";
 import { VideoInfo, VideoQuality } from "../types";
 import PlatformIcon from "./PlatformIcon";
 import { getPlatformName } from "../lib/utils";
@@ -10,18 +11,61 @@ interface DownloadResultProps {
   data: VideoInfo;
 }
 
-function DownloadButton({ item, index }: { item: VideoQuality; index: number }) {
+function DownloadButton({ item, index, videoTitle }: { item: VideoQuality; index: number; videoTitle: string }) {
+  const [status, setStatus] = useState<"idle" | "downloading" | "done" | "error">("idle");
   const isAudio = item.format === "mp3" || item.quality === "Audio";
 
-  const handleDownload = () => {
-    // Open in new tab to trigger download
-    window.open(item.url, "_blank");
+  const handleDownload = async () => {
+    if (status === "downloading") return;
+    setStatus("downloading");
+
+    try {
+      // Generate a clean filename
+      const ext = item.format || (isAudio ? "mp3" : "mp4");
+      const cleanTitle = videoTitle
+        .replace(/[^a-zA-Z0-9\s]/g, "")
+        .trim()
+        .replace(/\s+/g, "_")
+        .slice(0, 50);
+      const filename = `${cleanTitle}_${item.quality}.${ext}`;
+
+      // Use proxy API to force download
+      const proxyUrl = `/api/proxy?url=${encodeURIComponent(item.url)}&filename=${encodeURIComponent(filename)}`;
+
+      const response = await fetch(proxyUrl);
+
+      if (!response.ok) {
+        throw new Error("Download failed");
+      }
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+
+      // Create a temporary anchor element to trigger download
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      // Clean up the blob URL
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+
+      setStatus("done");
+      setTimeout(() => setStatus("idle"), 3000);
+    } catch {
+      // Fallback: open in new tab
+      window.open(item.url, "_blank");
+      setStatus("idle");
+    }
   };
 
   return (
     <button
       onClick={handleDownload}
-      className="group flex items-center justify-between w-full p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 transition-all duration-200 cursor-pointer"
+      disabled={status === "downloading"}
+      className="group flex items-center justify-between w-full p-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 transition-all duration-200 cursor-pointer disabled:cursor-wait"
       style={{ animationDelay: `${index * 0.1}s` }}
     >
       <div className="flex items-center gap-3">
@@ -41,10 +85,38 @@ function DownloadButton({ item, index }: { item: VideoQuality; index: number }) 
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <span className="text-xs text-white/40 hidden sm:block">Download</span>
-        <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center group-hover:bg-white group-hover:text-black transition-all duration-200">
-          <Download size={14} />
-        </div>
+        {status === "idle" && (
+          <>
+            <span className="text-xs text-white/40 hidden sm:block">Download</span>
+            <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center group-hover:bg-white group-hover:text-black transition-all duration-200">
+              <Download size={14} />
+            </div>
+          </>
+        )}
+        {status === "downloading" && (
+          <>
+            <span className="text-xs text-white/40 hidden sm:block">Downloading...</span>
+            <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center">
+              <Loader2 size={14} className="animate-spin text-white/60" />
+            </div>
+          </>
+        )}
+        {status === "done" && (
+          <>
+            <span className="text-xs text-green-400/70 hidden sm:block">Done!</span>
+            <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center">
+              <CheckCircle size={14} className="text-green-400" />
+            </div>
+          </>
+        )}
+        {status === "error" && (
+          <>
+            <span className="text-xs text-red-400/70 hidden sm:block">Failed</span>
+            <div className="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center">
+              <Download size={14} className="text-red-400" />
+            </div>
+          </>
+        )}
       </div>
     </button>
   );
@@ -112,7 +184,7 @@ export default function DownloadResult({ data }: DownloadResultProps) {
           Download Options
         </p>
         {data.downloads.map((item, index) => (
-          <DownloadButton key={index} item={item} index={index} />
+          <DownloadButton key={index} item={item} index={index} videoTitle={data.title} />
         ))}
       </div>
     </div>
