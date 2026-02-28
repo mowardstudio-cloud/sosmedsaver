@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { AlertCircle, Zap, Shield, Download } from "lucide-react";
+import { useState, useCallback } from "react";
+import { AlertCircle, Zap, Shield, Download, RefreshCw } from "lucide-react";
 import UrlInput from "./components/UrlInput";
 import DownloadResult from "./components/DownloadResult";
 import LoadingSkeleton from "./components/LoadingSkeleton";
@@ -57,50 +57,75 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<VideoInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retryUrl, setRetryUrl] = useState<string | null>(null);
 
-  const handleDownload = async (url: string) => {
+  const handleDownload = useCallback(async (url: string) => {
     setIsLoading(true);
     setResult(null);
     setError(null);
+    setRetryUrl(url);
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s client timeout
+
       const response = await fetch("/api/download", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ url }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       const data: ApiResponse = await response.json();
 
       if (data.success && data.data) {
         setResult(data.data);
+        setRetryUrl(null);
       } else {
-        setError(data.error || "Failed to fetch video information");
+        setError(data.error || "Failed to fetch video information. Please try again.");
       }
-    } catch {
-      setError("Network error. Please check your connection and try again.");
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        setError("Request timed out. The server is taking too long. Please try again.");
+      } else {
+        setError("Network error. Please check your connection and try again.");
+      }
     } finally {
       setIsLoading(false);
+    }
+  }, []);
+
+  const handleRetry = () => {
+    if (retryUrl) {
+      handleDownload(retryUrl);
     }
   };
 
   const handleReset = () => {
     setResult(null);
     setError(null);
+    setRetryUrl(null);
   };
+
+  const showContent = isLoading || result || error;
 
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-5 border-b border-white/5">
-        <div className="flex items-center gap-2.5">
+        <button
+          onClick={handleReset}
+          className="flex items-center gap-2.5 hover:opacity-80 transition-opacity"
+        >
           <div className="w-7 h-7 rounded-lg bg-white flex items-center justify-center">
             <Download size={14} className="text-black" />
           </div>
           <span className="text-sm font-semibold tracking-tight">VideoDown</span>
-        </div>
+        </button>
         <nav className="hidden sm:flex items-center gap-6">
           <a href="#features" className="text-xs text-white/40 hover:text-white/70 transition-colors">
             Features
@@ -114,7 +139,7 @@ export default function Home() {
       {/* Main content */}
       <main className="flex-1 flex flex-col">
         {/* Hero section */}
-        <section className="flex flex-col items-center justify-center px-6 pt-20 pb-16 text-center">
+        <section className="flex flex-col items-center justify-center px-6 pt-16 pb-12 text-center">
           {/* Badge */}
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5 mb-8 fade-in-up">
             <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
@@ -141,7 +166,7 @@ export default function Home() {
         </section>
 
         {/* Result section */}
-        {(isLoading || result || error) && (
+        {showContent && (
           <section className="px-6 pb-16">
             <div className="max-w-2xl mx-auto">
               {isLoading && <LoadingSkeleton />}
@@ -149,15 +174,26 @@ export default function Home() {
               {error && !isLoading && (
                 <div className="flex items-start gap-3 p-4 rounded-xl border border-red-500/20 bg-red-500/5 fade-in-up">
                   <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
-                  <div>
+                  <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-red-400">Download Failed</p>
-                    <p className="text-xs text-red-400/70 mt-1">{error}</p>
-                    <button
-                      onClick={handleReset}
-                      className="text-xs text-white/40 hover:text-white/70 mt-2 underline underline-offset-2 transition-colors"
-                    >
-                      Try again
-                    </button>
+                    <p className="text-xs text-red-400/70 mt-1 break-words">{error}</p>
+                    <div className="flex items-center gap-3 mt-3">
+                      {retryUrl && (
+                        <button
+                          onClick={handleRetry}
+                          className="flex items-center gap-1.5 text-xs text-white/50 hover:text-white/80 transition-colors"
+                        >
+                          <RefreshCw size={11} />
+                          Try again
+                        </button>
+                      )}
+                      <button
+                        onClick={handleReset}
+                        className="text-xs text-white/30 hover:text-white/60 transition-colors underline underline-offset-2"
+                      >
+                        New URL
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -179,8 +215,8 @@ export default function Home() {
           </section>
         )}
 
-        {/* Features section */}
-        {!result && !isLoading && (
+        {/* Features section - only show when no result */}
+        {!showContent && (
           <>
             <section id="features" className="px-6 py-16 border-t border-white/5">
               <div className="max-w-3xl mx-auto">
@@ -188,7 +224,7 @@ export default function Home() {
                   {FEATURES.map((feature, index) => (
                     <div
                       key={feature.title}
-                      className="flex flex-col items-center text-center p-6 rounded-2xl border border-white/5 bg-white/3 hover:bg-white/5 hover:border-white/10 transition-all duration-200"
+                      className="flex flex-col items-center text-center p-6 rounded-2xl border border-white/5 bg-white/[0.03] hover:bg-white/5 hover:border-white/10 transition-all duration-200"
                       style={{ animationDelay: `${index * 0.1}s` }}
                     >
                       <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center mb-4">
@@ -215,7 +251,7 @@ export default function Home() {
                   {SUPPORTED_PLATFORMS.map((platform) => (
                     <div
                       key={platform.name}
-                      className="flex flex-col items-center gap-3 p-5 rounded-2xl border border-white/5 bg-white/3 hover:bg-white/5 hover:border-white/10 transition-all duration-200 group"
+                      className="flex flex-col items-center gap-3 p-5 rounded-2xl border border-white/5 bg-white/[0.03] hover:bg-white/5 hover:border-white/10 transition-all duration-200 group cursor-default"
                     >
                       <div
                         className="w-12 h-12 rounded-2xl flex items-center justify-center transition-all duration-200"
@@ -254,7 +290,7 @@ export default function Home() {
                     {
                       step: "02",
                       title: "Paste & Submit",
-                      desc: "Paste the URL in the input field above and click Download",
+                      desc: "Paste the URL — it auto-submits when a valid URL is detected",
                     },
                     {
                       step: "03",
