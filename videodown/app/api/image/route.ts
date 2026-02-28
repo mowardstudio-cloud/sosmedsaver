@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
+import axios from "axios";
+
+// Transparent 1x1 PNG fallback
+const TRANSPARENT_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64"
+);
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const imageUrl = searchParams.get("url");
 
   if (!imageUrl) {
-    return NextResponse.json({ error: "URL is required" }, { status: 400 });
+    return new NextResponse(TRANSPARENT_PNG, {
+      status: 200,
+      headers: { "Content-Type": "image/png" },
+    });
   }
 
   try {
@@ -20,58 +30,40 @@ export async function GET(request: NextRequest) {
     try {
       new URL(absoluteUrl);
     } catch {
-      return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
+      return new NextResponse(TRANSPARENT_PNG, {
+        status: 200,
+        headers: { "Content-Type": "image/png" },
+      });
     }
 
-    // Determine referer and headers based on URL
+    // Determine referer based on URL
     let referer = "https://www.tiktok.com/";
-    let origin = "https://www.tiktok.com";
-
     if (absoluteUrl.includes("tikwm.com")) {
       referer = "https://www.tikwm.com/";
-      origin = "https://www.tikwm.com";
     } else if (absoluteUrl.includes("cdninstagram.com") || absoluteUrl.includes("threads.net")) {
       referer = "https://www.threads.net/";
-      origin = "https://www.threads.net";
     } else if (absoluteUrl.includes("fbcdn.net") || absoluteUrl.includes("facebook.com")) {
       referer = "https://www.facebook.com/";
-      origin = "https://www.facebook.com";
     } else if (absoluteUrl.includes("twimg.com")) {
       referer = "https://twitter.com/";
-      origin = "https://twitter.com";
     }
 
-    const response = await fetch(absoluteUrl, {
+    // Use axios (works better with TikTok CDN than native fetch)
+    const response = await axios.get(absoluteUrl, {
+      responseType: "arraybuffer",
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         Referer: referer,
-        Origin: origin,
         Accept: "image/webp,image/apng,image/*,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Sec-Fetch-Dest": "image",
-        "Sec-Fetch-Mode": "no-cors",
-        "Sec-Fetch-Site": "cross-site",
       },
+      timeout: 15000,
+      maxRedirects: 5,
     });
 
-    if (!response.ok) {
-      // Return a transparent 1x1 pixel as fallback
-      const transparentPixel = Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-        "base64"
-      );
-      return new NextResponse(transparentPixel, {
-        status: 200,
-        headers: {
-          "Content-Type": "image/png",
-          "Cache-Control": "public, max-age=60",
-        },
-      });
-    }
-
-    const contentType = response.headers.get("content-type") || "image/jpeg";
-    const imageBuffer = await response.arrayBuffer();
+    const contentType = (response.headers["content-type"] as string) || "image/jpeg";
+    const imageBuffer = Buffer.from(response.data);
 
     return new NextResponse(imageBuffer, {
       status: 200,
@@ -82,13 +74,9 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error("Image proxy error:", error);
-    // Return a transparent 1x1 pixel as fallback instead of error
-    const transparentPixel = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-      "base64"
-    );
-    return new NextResponse(transparentPixel, {
+    console.error("Image proxy error:", error instanceof Error ? error.message : error);
+    // Return transparent pixel instead of error
+    return new NextResponse(TRANSPARENT_PNG, {
       status: 200,
       headers: {
         "Content-Type": "image/png",
