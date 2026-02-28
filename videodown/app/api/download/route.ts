@@ -6,563 +6,555 @@ import { ApiResponse, VideoInfo, VideoQuality } from "@/app/types";
 // Retry helper with exponential backoff
 async function withRetry<T>(
   fn: () => Promise<T>,
-  retries = 3,
-  delay = 1000
+  retries = 2,
+  delay = 1500
 ): Promise<T> {
   for (let i = 0; i < retries; i++) {
     try {
       return await fn();
     } catch (error) {
       if (i === retries - 1) throw error;
-      await new Promise((resolve) => setTimeout(resolve, delay * Math.pow(2, i)));
+      await new Promise((resolve) => setTimeout(resolve, delay * (i + 1)));
     }
   }
   throw new Error("Max retries exceeded");
 }
 
 // Shared axios config
-const axiosConfig: AxiosRequestConfig = {
-  timeout: 30000,
+const baseConfig: AxiosRequestConfig = {
+  timeout: 25000,
   headers: {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
   },
 };
 
-// Helper to ensure absolute URL (tikwm sometimes returns relative paths)
+// Helper to ensure absolute URL
 function toAbsoluteUrl(u: string, base = "https://www.tikwm.com"): string {
   if (!u) return u;
   if (u.startsWith("http://") || u.startsWith("https://")) return u;
   return `${base}${u.startsWith("/") ? "" : "/"}${u}`;
 }
 
-// TikTok downloader with multiple API fallbacks
-async function downloadTikTok(url: string): Promise<VideoInfo> {
-  // Method 1: tikwm API
-  const fetchFromTikwm = async (): Promise<VideoInfo> => {
-    const response = await axios.post(
-      "https://www.tikwm.com/api/",
-      new URLSearchParams({ url, count: "12", cursor: "0", web: "1", hd: "1" }),
-      {
-        ...axiosConfig,
-        timeout: 20000,
-        headers: {
-          ...axiosConfig.headers,
-          "Content-Type": "application/x-www-form-urlencoded",
-          Referer: "https://www.tikwm.com/",
-          Origin: "https://www.tikwm.com",
-        },
-      }
-    );
+// ============================================================
+// TIKTOK DOWNLOADER
+// ============================================================
 
-    const data = response.data;
-    if (data.code !== 0 || !data.data) {
-      throw new Error(`tikwm API error: ${data.msg || "Unknown error"}`);
-    }
+// Method 1: ssstik.io (most reliable)
+async function tiktokViaSsstik(url: string): Promise<VideoInfo> {
+  // Step 1: Get token
+  const pageResp = await axios.get("https://ssstik.io/en", {
+    ...baseConfig,
+    timeout: 15000,
+  });
 
-    const videoData = data.data;
-    const downloads: VideoQuality[] = [];
+  const tokenMatch = (pageResp.data as string).match(/s_tt\s*=\s*["']([^"']+)["']/);
+  if (!tokenMatch) throw new Error("Could not get ssstik token");
 
-    // Note: hdplay uses BVC2 codec (TikTok proprietary) which is not widely supported.
-    // We use 'play' (H.264) as the primary no-watermark option.
-    if (videoData.play) {
-      downloads.push({
-        label: "Video (No Watermark)",
-        url: toAbsoluteUrl(videoData.play),
-        quality: "HD",
-        format: "mp4",
-      });
-    }
-
-    if (videoData.wmplay) {
-      downloads.push({
-        label: "Video (With Watermark)",
-        url: toAbsoluteUrl(videoData.wmplay),
-        quality: "SD",
-        format: "mp4",
-      });
-    }
-
-    if (videoData.music) {
-      downloads.push({
-        label: "Audio Only (MP3)",
-        url: toAbsoluteUrl(videoData.music),
-        quality: "Audio",
-        format: "mp3",
-      });
-    }
-
-    if (downloads.length === 0) throw new Error("No download links found");
-
-    // Prefer TikTok CDN URLs for thumbnail (tikwm.com blocks cross-origin)
-    // Use origin_cover (static WebP) as primary - best quality static thumbnail
-    // Avoid ai_dynamic_cover as it may show greenscreen frames
-    const getThumbnail = () => {
-      const candidates = [
-        videoData.origin_cover,  // Best quality static thumbnail
-        videoData.cover,         // Fallback static thumbnail
-        videoData.ai_dynamic_cover, // Last resort (may be animated/greenscreen)
-      ].filter(Boolean);
-
-      for (const u of candidates) {
-        const absUrl = toAbsoluteUrl(u);
-        if (!absUrl.includes("tikwm.com")) return absUrl;
-      }
-      return candidates.length > 0 ? toAbsoluteUrl(candidates[0]) : "";
-    };
-
-    return {
-      title: videoData.title || "TikTok Video",
-      thumbnail: getThumbnail(),
-      duration: videoData.duration
-        ? `${Math.floor(videoData.duration / 60)}:${String(videoData.duration % 60).padStart(2, "0")}`
-        : undefined,
-      author: videoData.author?.nickname || videoData.author?.unique_id,
-      platform: "tiktok",
-      downloads,
-    };
-  };
-
-  // Method 2: musicaldown API (alternative)
-  const fetchFromMusicalDown = async (): Promise<VideoInfo> => {
-    // Get token first
-    const tokenResp = await axios.get("https://musicaldown.com/en", {
-      ...axiosConfig,
-      timeout: 15000,
+  // Step 2: Download
+  const dlResp = await axios.post(
+    "https://ssstik.io/abc?url=dl",
+    new URLSearchParams({
+      id: url,
+      locale: "en",
+      tt: tokenMatch[1],
+    }),
+    {
+      ...baseConfig,
       headers: {
-        ...axiosConfig.headers,
-        Referer: "https://musicaldown.com/",
+        ...baseConfig.headers,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Referer: "https://ssstik.io/en",
+        Origin: "https://ssstik.io",
+        "HX-Request": "true",
+        "HX-Target": "target",
+        "HX-Current-URL": "https://ssstik.io/en",
       },
-    });
-
-    const tokenHtml = tokenResp.data as string;
-    const tokenMatch = tokenHtml.match(/name="([^"]+)"\s+value="([^"]+)"/g);
-    if (!tokenMatch) throw new Error("Could not get token");
-
-    const formData = new URLSearchParams();
-    formData.append("link", url);
-
-    // Extract hidden fields
-    const hiddenFields = tokenHtml.matchAll(/<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]+)"/g);
-    for (const field of hiddenFields) {
-      formData.append(field[1], field[2]);
     }
+  );
 
-    const response = await axios.post(
-      "https://musicaldown.com/download",
-      formData,
-      {
-        ...axiosConfig,
-        timeout: 20000,
-        headers: {
-          ...axiosConfig.headers,
-          "Content-Type": "application/x-www-form-urlencoded",
-          Referer: "https://musicaldown.com/en",
-          Origin: "https://musicaldown.com",
-        },
+  const html = dlResp.data as string;
+  const downloads: VideoQuality[] = [];
+
+  // Extract video links
+  const videoLinks = html.matchAll(/href="(https:\/\/[^"]+)"[^>]*>\s*([^<]*(?:Without|With|HD|SD|MP3|Audio)[^<]*)</gi);
+  for (const match of videoLinks) {
+    const videoUrl = match[1];
+    const label = match[2].trim();
+    if (videoUrl && !downloads.find((d) => d.url === videoUrl)) {
+      const isAudio = label.toLowerCase().includes("mp3") || label.toLowerCase().includes("audio");
+      downloads.push({
+        label: label || "Download",
+        url: videoUrl,
+        quality: isAudio ? "Audio" : label.toLowerCase().includes("hd") ? "HD" : "SD",
+        format: isAudio ? "mp3" : "mp4",
+      });
+    }
+  }
+
+  // Fallback: extract any mp4/mp3 links
+  if (downloads.length === 0) {
+    const allLinks = html.matchAll(/href="(https:\/\/[^"]+\.(?:mp4|mp3)[^"]*)"/gi);
+    for (const match of allLinks) {
+      if (!downloads.find((d) => d.url === match[1])) {
+        const isAudio = match[1].includes(".mp3");
+        downloads.push({
+          label: downloads.length === 0 ? "Video (No Watermark)" : `Download ${downloads.length + 1}`,
+          url: match[1],
+          quality: isAudio ? "Audio" : "HD",
+          format: isAudio ? "mp3" : "mp4",
+        });
       }
-    );
+    }
+  }
 
-    const html = response.data as string;
-    const downloads: VideoQuality[] = [];
-
-    // Extract video links
-    const videoMatches = html.matchAll(/href="(https:\/\/[^"]+\.mp4[^"]*)"[^>]*class="[^"]*btn[^"]*"/g);
-    for (const match of videoMatches) {
+  // Extract tikcdn links
+  if (downloads.length === 0) {
+    const tikcLinks = html.matchAll(/href="(https:\/\/tikcdn\.io\/[^"]+)"/gi);
+    for (const match of tikcLinks) {
       if (!downloads.find((d) => d.url === match[1])) {
         downloads.push({
-          label: downloads.length === 0 ? "Video (No Watermark)" : "Video (With Watermark)",
+          label: downloads.length === 0 ? "Video (No Watermark)" : `Download ${downloads.length + 1}`,
           url: match[1],
-          quality: downloads.length === 0 ? "HD" : "SD",
+          quality: "HD",
           format: "mp4",
         });
       }
     }
+  }
 
-    if (downloads.length === 0) throw new Error("No download links found");
+  if (downloads.length === 0) throw new Error("No download links found in ssstik response");
 
-    const thumbMatch = html.match(/src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/);
+  // Extract thumbnail
+  const thumbMatch = html.match(/src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/i);
+  const titleMatch = html.match(/<p[^>]*>([^<]{10,200})<\/p>/);
 
-    return {
-      title: "TikTok Video",
-      thumbnail: thumbMatch ? thumbMatch[1] : "",
-      platform: "tiktok",
-      downloads,
-    };
+  return {
+    title: titleMatch ? titleMatch[1].trim() : "TikTok Video",
+    thumbnail: thumbMatch ? thumbMatch[1] : "",
+    platform: "tiktok",
+    downloads,
+  };
+}
+
+// Method 2: tikwm API
+async function tiktokViaTikwm(url: string): Promise<VideoInfo> {
+  const response = await axios.post(
+    "https://www.tikwm.com/api/",
+    new URLSearchParams({ url, count: "12", cursor: "0", web: "1", hd: "1" }),
+    {
+      ...baseConfig,
+      headers: {
+        ...baseConfig.headers,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Referer: "https://www.tikwm.com/",
+        Origin: "https://www.tikwm.com",
+      },
+    }
+  );
+
+  const data = response.data;
+  if (data.code !== 0 || !data.data) {
+    throw new Error(`tikwm error: ${data.msg || "Unknown error"}`);
+  }
+
+  const videoData = data.data;
+  const downloads: VideoQuality[] = [];
+
+  if (videoData.play) {
+    downloads.push({
+      label: "Video (No Watermark)",
+      url: toAbsoluteUrl(videoData.play),
+      quality: "HD",
+      format: "mp4",
+    });
+  }
+
+  if (videoData.wmplay) {
+    downloads.push({
+      label: "Video (With Watermark)",
+      url: toAbsoluteUrl(videoData.wmplay),
+      quality: "SD",
+      format: "mp4",
+    });
+  }
+
+  if (videoData.music) {
+    downloads.push({
+      label: "Audio Only (MP3)",
+      url: toAbsoluteUrl(videoData.music),
+      quality: "Audio",
+      format: "mp3",
+    });
+  }
+
+  if (downloads.length === 0) throw new Error("No download links found");
+
+  const getThumbnail = () => {
+    const candidates = [videoData.origin_cover, videoData.cover, videoData.ai_dynamic_cover].filter(Boolean);
+    for (const u of candidates) {
+      const absUrl = toAbsoluteUrl(u);
+      if (!absUrl.includes("tikwm.com")) return absUrl;
+    }
+    return candidates.length > 0 ? toAbsoluteUrl(candidates[0]) : "";
   };
 
+  return {
+    title: videoData.title || "TikTok Video",
+    thumbnail: getThumbnail(),
+    duration: videoData.duration
+      ? `${Math.floor(videoData.duration / 60)}:${String(videoData.duration % 60).padStart(2, "0")}`
+      : undefined,
+    author: videoData.author?.nickname || videoData.author?.unique_id,
+    platform: "tiktok",
+    downloads,
+  };
+}
+
+async function downloadTikTok(url: string): Promise<VideoInfo> {
   const methods = [
-    () => withRetry(fetchFromTikwm, 2, 2000),
-    () => withRetry(fetchFromMusicalDown, 2, 1000),
+    () => withRetry(() => tiktokViaSsstik(url), 2, 2000),
+    () => withRetry(() => tiktokViaTikwm(url), 2, 2000),
   ];
 
-  let lastError: Error = new Error("All methods failed");
-
+  let lastError: Error = new Error("All TikTok methods failed");
   for (const method of methods) {
     try {
       return await method();
     } catch (error) {
       lastError = error instanceof Error ? error : new Error("Unknown error");
-      continue;
     }
   }
-
   throw new Error(`TikTok download failed: ${lastError.message}`);
 }
 
-// Twitter/X downloader with multiple fallback APIs
-async function downloadTwitter(url: string): Promise<VideoInfo> {
-  // Normalize URL (x.com -> twitter.com)
+// ============================================================
+// TWITTER/X DOWNLOADER
+// ============================================================
+
+async function twitterViaVxTwitter(url: string): Promise<VideoInfo> {
   const normalizedUrl = url.replace("x.com", "twitter.com");
+  const tweetId = normalizedUrl.match(/status\/(\d+)/)?.[1];
+  if (!tweetId) throw new Error("Could not extract tweet ID");
 
-  // Method 1: vxtwitter API (fast and reliable)
-  const tryVxTwitter = async (): Promise<VideoInfo> => {
-    const tweetId = normalizedUrl.match(/status\/(\d+)/)?.[1];
-    if (!tweetId) throw new Error("Could not extract tweet ID");
+  const response = await axios.get(
+    `https://api.vxtwitter.com/Twitter/status/${tweetId}`,
+    {
+      ...baseConfig,
+      headers: { ...baseConfig.headers, Accept: "application/json" },
+    }
+  );
 
-    const response = await axios.get(
-      `https://api.vxtwitter.com/Twitter/status/${tweetId}`,
-      {
-        ...axiosConfig,
-        headers: {
-          ...axiosConfig.headers,
-          Accept: "application/json",
-        },
-      }
-    );
+  const data = response.data;
+  if (!data?.media_extended?.length) throw new Error("No media found in tweet");
 
-    const data = response.data;
-    if (!data || !data.media_extended) throw new Error("No media found");
+  const downloads: VideoQuality[] = [];
+  const videos = data.media_extended.filter(
+    (m: { type: string }) => m.type === "video" || m.type === "gif"
+  );
 
-    const downloads: VideoQuality[] = [];
-    const videos = data.media_extended.filter(
-      (m: { type: string }) => m.type === "video" || m.type === "gif"
-    );
+  if (videos.length === 0) throw new Error("No video found in tweet");
 
-    if (videos.length === 0) throw new Error("No video found in tweet");
+  videos.forEach((video: { url: string; size?: { width: number; height: number } }, index: number) => {
+    const quality = video.size ? `${video.size.width}x${video.size.height}` : index === 0 ? "HD" : "SD";
+    downloads.push({
+      label: index === 0 ? "Video HD" : `Video ${index + 1}`,
+      url: video.url,
+      quality,
+      format: "mp4",
+    });
+  });
 
-    videos.forEach((video: { url: string; thumbnail_url?: string; size?: { width: number; height: number } }, index: number) => {
-      const quality = video.size
-        ? `${video.size.width}x${video.size.height}`
-        : index === 0
-        ? "HD"
-        : "SD";
+  return {
+    title: data.text?.slice(0, 100) || "Twitter Video",
+    thumbnail: data.mediaURLs?.[0] || data.media_extended?.[0]?.thumbnail_url || "",
+    author: data.user_name || data.user_screen_name,
+    platform: "twitter",
+    downloads,
+  };
+}
+
+async function twitterViaTwitsave(url: string): Promise<VideoInfo> {
+  const normalizedUrl = url.replace("x.com", "twitter.com");
+  const response = await axios.get(
+    `https://twitsave.com/info?url=${encodeURIComponent(normalizedUrl)}`,
+    {
+      ...baseConfig,
+      headers: { ...baseConfig.headers, Accept: "text/html", Referer: "https://twitsave.com/" },
+    }
+  );
+
+  const html = response.data as string;
+  const downloads: VideoQuality[] = [];
+
+  const downloadMatches = html.matchAll(/href="(https:\/\/[^"]+\.mp4[^"]*)"[^>]*>([^<]+)</g);
+  for (const match of downloadMatches) {
+    const videoUrl = match[1];
+    const label = match[2].trim();
+    if (videoUrl && !downloads.find((d) => d.url === videoUrl)) {
       downloads.push({
-        label: index === 0 ? "Video HD" : `Video ${index + 1}`,
-        url: video.url,
-        quality,
+        label: label || "Download Video",
+        url: videoUrl,
+        quality: label.includes("720") ? "720p" : label.includes("480") ? "480p" : "SD",
         format: "mp4",
       });
-    });
-
-    return {
-      title: data.text?.slice(0, 100) || "Twitter Video",
-      thumbnail: data.mediaURLs?.[0] || data.media_extended?.[0]?.thumbnail_url || "",
-      author: data.user_name || data.user_screen_name,
-      platform: "twitter",
-      downloads,
-    };
-  };
-
-  // Method 2: twitsave scraping
-  const tryTwitSave = async (): Promise<VideoInfo> => {
-    const response = await axios.get(
-      `https://twitsave.com/info?url=${encodeURIComponent(normalizedUrl)}`,
-      {
-        ...axiosConfig,
-        headers: {
-          ...axiosConfig.headers,
-          Accept: "text/html",
-          Referer: "https://twitsave.com/",
-        },
-      }
-    );
-
-    const html = response.data as string;
-    const downloads: VideoQuality[] = [];
-
-    const downloadMatches = html.matchAll(
-      /href="(https:\/\/[^"]+\.mp4[^"]*)"[^>]*>([^<]+)</g
-    );
-    for (const match of downloadMatches) {
-      const videoUrl = match[1];
-      const label = match[2].trim();
-      if (videoUrl && !downloads.find((d) => d.url === videoUrl)) {
-        downloads.push({
-          label: label || "Download Video",
-          url: videoUrl,
-          quality: label.includes("720") ? "720p" : label.includes("480") ? "480p" : "SD",
-          format: "mp4",
-        });
-      }
-    }
-
-    if (downloads.length === 0) throw new Error("No download links found");
-
-    const titleMatch = html.match(/<title>([^<]+)<\/title>/);
-    const title = titleMatch ? titleMatch[1].replace(" - TwitSave", "").trim() : "Twitter Video";
-    const thumbMatch = html.match(/property="og:image"\s+content="([^"]+)"/);
-
-    return {
-      title,
-      thumbnail: thumbMatch ? thumbMatch[1] : "",
-      platform: "twitter",
-      downloads,
-    };
-  };
-
-  // Try methods in order
-  const methods = [tryVxTwitter, tryTwitSave];
-  let lastError: Error = new Error("All methods failed");
-
-  for (const method of methods) {
-    try {
-      return await withRetry(method, 2, 1000);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("Unknown error");
-      continue;
     }
   }
 
+  if (downloads.length === 0) throw new Error("No download links found");
+
+  const titleMatch = html.match(/<title>([^<]+)<\/title>/);
+  const thumbMatch = html.match(/property="og:image"\s+content="([^"]+)"/);
+
+  return {
+    title: titleMatch ? titleMatch[1].replace(" - TwitSave", "").trim() : "Twitter Video",
+    thumbnail: thumbMatch ? thumbMatch[1] : "",
+    platform: "twitter",
+    downloads,
+  };
+}
+
+async function downloadTwitter(url: string): Promise<VideoInfo> {
+  const methods = [
+    () => withRetry(() => twitterViaVxTwitter(url), 2, 1500),
+    () => withRetry(() => twitterViaTwitsave(url), 2, 1500),
+  ];
+
+  let lastError: Error = new Error("All Twitter methods failed");
+  for (const method of methods) {
+    try {
+      return await method();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Unknown error");
+    }
+  }
   throw new Error(`Twitter download failed: ${lastError.message}`);
 }
 
-// Facebook downloader with multiple methods
-async function downloadFacebook(url: string): Promise<VideoInfo> {
-  // Method 1: getfvid.com
-  const tryGetFvid = async (): Promise<VideoInfo> => {
-    const response = await axios.post(
-      "https://getfvid.com/downloader",
-      new URLSearchParams({ url }),
-      {
-        ...axiosConfig,
-        headers: {
-          ...axiosConfig.headers,
-          "Content-Type": "application/x-www-form-urlencoded",
-          Referer: "https://getfvid.com/",
-          Origin: "https://getfvid.com",
-        },
-      }
-    );
+// ============================================================
+// FACEBOOK DOWNLOADER
+// ============================================================
 
-    const html = response.data as string;
-    const downloads: VideoQuality[] = [];
-
-    const hdMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*>\s*HD\s*</);
-    if (hdMatch) {
-      downloads.push({
-        label: "HD Video",
-        url: hdMatch[1],
-        quality: "HD",
-        format: "mp4",
-      });
+async function facebookViaGetfvid(url: string): Promise<VideoInfo> {
+  const response = await axios.post(
+    "https://getfvid.com/downloader",
+    new URLSearchParams({ url }),
+    {
+      ...baseConfig,
+      headers: {
+        ...baseConfig.headers,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Referer: "https://getfvid.com/",
+        Origin: "https://getfvid.com",
+      },
     }
+  );
 
-    const sdMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*>\s*SD\s*</);
-    if (sdMatch) {
-      downloads.push({
-        label: "SD Video",
-        url: sdMatch[1],
-        quality: "SD",
-        format: "mp4",
-      });
-    }
+  const html = response.data as string;
+  const downloads: VideoQuality[] = [];
 
-    if (downloads.length === 0) throw new Error("No download links found");
+  const hdMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*>\s*HD\s*</);
+  if (hdMatch) downloads.push({ label: "HD Video", url: hdMatch[1], quality: "HD", format: "mp4" });
 
-    const thumbMatch = html.match(/src="(https:\/\/[^"]+\.jpg[^"]*)"[^>]*class="[^"]*thumbnail/);
+  const sdMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*>\s*SD\s*</);
+  if (sdMatch) downloads.push({ label: "SD Video", url: sdMatch[1], quality: "SD", format: "mp4" });
 
-    return {
-      title: "Facebook Video",
-      thumbnail: thumbMatch ? thumbMatch[1] : "",
-      platform: "facebook",
-      downloads,
-    };
+  if (downloads.length === 0) throw new Error("No download links found");
+
+  const thumbMatch = html.match(/src="(https:\/\/[^"]+\.jpg[^"]*)"[^>]*class="[^"]*thumbnail/);
+
+  return {
+    title: "Facebook Video",
+    thumbnail: thumbMatch ? thumbMatch[1] : "",
+    platform: "facebook",
+    downloads,
   };
+}
 
-  // Method 2: fdown.net
-  const tryFdown = async (): Promise<VideoInfo> => {
-    const response = await axios.post(
-      "https://fdown.net/download.php",
-      new URLSearchParams({ URLz: url }),
-      {
-        ...axiosConfig,
-        headers: {
-          ...axiosConfig.headers,
-          "Content-Type": "application/x-www-form-urlencoded",
-          Referer: "https://fdown.net/",
-          Origin: "https://fdown.net",
-        },
-      }
-    );
+async function facebookViaSnapSave(url: string): Promise<VideoInfo> {
+  // SnapSave returns obfuscated JS, need to decode it
+  const response = await axios.post(
+    "https://snapsave.app/action.php",
+    new URLSearchParams({ url }),
+    {
+      ...baseConfig,
+      headers: {
+        ...baseConfig.headers,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Referer: "https://snapsave.app/",
+        Origin: "https://snapsave.app",
+      },
+    }
+  );
 
-    const html = response.data as string;
-    const downloads: VideoQuality[] = [];
+  const jsCode = response.data as string;
 
-    // Extract HD
-    const hdMatch = html.match(/id="hdlink"[^>]*href="([^"]+)"/);
-    if (hdMatch) {
+  // The response is obfuscated JS that decodes to HTML
+  // Try to extract URLs directly from the obfuscated code
+  const urlMatches = jsCode.matchAll(/https:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*/g);
+  const downloads: VideoQuality[] = [];
+
+  for (const match of urlMatches) {
+    const videoUrl = match[0].replace(/\\u002F/g, "/").replace(/\\/g, "");
+    if (!downloads.find((d) => d.url === videoUrl)) {
       downloads.push({
-        label: "HD Video",
-        url: hdMatch[1],
-        quality: "HD",
+        label: downloads.length === 0 ? "HD Video" : "SD Video",
+        url: videoUrl,
+        quality: downloads.length === 0 ? "HD" : "SD",
         format: "mp4",
       });
-    }
-
-    // Extract SD
-    const sdMatch = html.match(/id="sdlink"[^>]*href="([^"]+)"/);
-    if (sdMatch) {
-      downloads.push({
-        label: "SD Video",
-        url: sdMatch[1],
-        quality: "SD",
-        format: "mp4",
-      });
-    }
-
-    if (downloads.length === 0) throw new Error("No download links found");
-
-    return {
-      title: "Facebook Video",
-      thumbnail: "",
-      platform: "facebook",
-      downloads,
-    };
-  };
-
-  const methods = [tryGetFvid, tryFdown];
-  let lastError: Error = new Error("All methods failed");
-
-  for (const method of methods) {
-    try {
-      return await withRetry(method, 2, 1000);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("Unknown error");
-      continue;
     }
   }
 
+  if (downloads.length === 0) throw new Error("No download links found in snapsave response");
+
+  return {
+    title: "Facebook Video",
+    thumbnail: "",
+    platform: "facebook",
+    downloads,
+  };
+}
+
+async function downloadFacebook(url: string): Promise<VideoInfo> {
+  const methods = [
+    () => withRetry(() => facebookViaGetfvid(url), 2, 2000),
+    () => withRetry(() => facebookViaSnapSave(url), 2, 2000),
+  ];
+
+  let lastError: Error = new Error("All Facebook methods failed");
+  for (const method of methods) {
+    try {
+      return await method();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Unknown error");
+    }
+  }
   throw new Error(`Facebook download failed: ${lastError.message}`);
 }
 
-// Threads downloader
-async function downloadThreads(url: string): Promise<VideoInfo> {
-  // Method 1: Threads API
-  const tryThreadsApi = async (): Promise<VideoInfo> => {
-    const postIdMatch = url.match(/\/p\/([A-Za-z0-9_-]+)/);
-    if (!postIdMatch) throw new Error("Invalid Threads URL format");
+// ============================================================
+// THREADS DOWNLOADER
+// ============================================================
 
-    const response = await axios.get("https://www.threads.net/api/graphql", {
-      params: {
-        doc_id: "6232751443445612",
-        variables: JSON.stringify({ postID: postIdMatch[1] }),
-      },
-      ...axiosConfig,
-      headers: {
-        ...axiosConfig.headers,
-        "X-IG-App-ID": "238260118697367",
-        Accept: "application/json",
-        Referer: "https://www.threads.net/",
-      },
-    });
+async function threadsViaApi(url: string): Promise<VideoInfo> {
+  const postIdMatch = url.match(/\/p\/([A-Za-z0-9_-]+)/);
+  if (!postIdMatch) throw new Error("Invalid Threads URL format");
 
-    const data = response.data;
-    const post = data?.data?.data?.edges?.[0]?.node?.thread_items?.[0]?.post;
+  const response = await axios.get("https://www.threads.net/api/graphql", {
+    params: {
+      doc_id: "6232751443445612",
+      variables: JSON.stringify({ postID: postIdMatch[1] }),
+    },
+    ...baseConfig,
+    headers: {
+      ...baseConfig.headers,
+      "X-IG-App-ID": "238260118697367",
+      Accept: "application/json",
+      Referer: "https://www.threads.net/",
+    },
+  });
 
-    if (!post) throw new Error("Could not fetch Threads post data");
+  const data = response.data;
+  const post = data?.data?.data?.edges?.[0]?.node?.thread_items?.[0]?.post;
 
-    const downloads: VideoQuality[] = [];
-    const videoVersions = post?.video_versions;
+  if (!post) throw new Error("Could not fetch Threads post data");
 
-    if (videoVersions && videoVersions.length > 0) {
-      videoVersions.forEach(
-        (version: { url: string; width: number; height: number }, index: number) => {
-          downloads.push({
-            label: index === 0 ? "HD Video" : `Video ${index + 1}`,
-            url: version.url,
-            quality: `${version.width}x${version.height}`,
-            format: "mp4",
-          });
-        }
-      );
-    }
+  const downloads: VideoQuality[] = [];
+  const videoVersions = post?.video_versions;
 
-    if (downloads.length === 0) throw new Error("No video found in this Threads post");
-
-    const thumbnail =
-      post?.image_versions2?.candidates?.[0]?.url ||
-      post?.carousel_media?.[0]?.image_versions2?.candidates?.[0]?.url ||
-      "";
-
-    return {
-      title: post?.caption?.text?.slice(0, 100) || "Threads Video",
-      thumbnail,
-      author: post?.user?.username,
-      platform: "threads",
-      downloads,
-    };
-  };
-
-  // Method 2: savethreads.net scraping
-  const trySaveThreads = async (): Promise<VideoInfo> => {
-    const response = await axios.post(
-      "https://savethreads.net/",
-      new URLSearchParams({ url }),
-      {
-        ...axiosConfig,
-        headers: {
-          ...axiosConfig.headers,
-          "Content-Type": "application/x-www-form-urlencoded",
-          Referer: "https://savethreads.net/",
-          Origin: "https://savethreads.net",
-        },
-      }
-    );
-
-    const html = response.data as string;
-    const downloads: VideoQuality[] = [];
-
-    const videoMatches = html.matchAll(/href="(https:\/\/[^"]+\.mp4[^"]*)"[^>]*>/g);
-    for (const match of videoMatches) {
-      if (!downloads.find((d) => d.url === match[1])) {
+  if (videoVersions?.length > 0) {
+    videoVersions.forEach(
+      (version: { url: string; width: number; height: number }, index: number) => {
         downloads.push({
-          label: `Video ${downloads.length + 1}`,
-          url: match[1],
-          quality: downloads.length === 0 ? "HD" : "SD",
+          label: index === 0 ? "HD Video" : `Video ${index + 1}`,
+          url: version.url,
+          quality: `${version.width}x${version.height}`,
           format: "mp4",
         });
       }
-    }
+    );
+  }
 
-    if (downloads.length === 0) throw new Error("No video found");
+  if (downloads.length === 0) throw new Error("No video found in this Threads post");
 
-    const thumbMatch = html.match(/src="(https:\/\/[^"]+\.jpg[^"]*)"/);
+  const thumbnail =
+    post?.image_versions2?.candidates?.[0]?.url ||
+    post?.carousel_media?.[0]?.image_versions2?.candidates?.[0]?.url ||
+    "";
 
-    return {
-      title: "Threads Video",
-      thumbnail: thumbMatch ? thumbMatch[1] : "",
-      platform: "threads",
-      downloads,
-    };
+  return {
+    title: post?.caption?.text?.slice(0, 100) || "Threads Video",
+    thumbnail,
+    author: post?.user?.username,
+    platform: "threads",
+    downloads,
   };
+}
 
-  const methods = [tryThreadsApi, trySaveThreads];
-  let lastError: Error = new Error("All methods failed");
+async function threadsViaSaveThreads(url: string): Promise<VideoInfo> {
+  const response = await axios.post(
+    "https://savethreads.net/",
+    new URLSearchParams({ url }),
+    {
+      ...baseConfig,
+      headers: {
+        ...baseConfig.headers,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Referer: "https://savethreads.net/",
+        Origin: "https://savethreads.net",
+      },
+    }
+  );
 
-  for (const method of methods) {
-    try {
-      return await withRetry(method, 2, 1000);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("Unknown error");
-      continue;
+  const html = response.data as string;
+  const downloads: VideoQuality[] = [];
+
+  const videoMatches = html.matchAll(/href="(https:\/\/[^"]+\.mp4[^"]*)"/g);
+  for (const match of videoMatches) {
+    if (!downloads.find((d) => d.url === match[1])) {
+      downloads.push({
+        label: `Video ${downloads.length + 1}`,
+        url: match[1],
+        quality: downloads.length === 0 ? "HD" : "SD",
+        format: "mp4",
+      });
     }
   }
 
+  if (downloads.length === 0) throw new Error("No video found");
+
+  const thumbMatch = html.match(/src="(https:\/\/[^"]+\.jpg[^"]*)"/);
+
+  return {
+    title: "Threads Video",
+    thumbnail: thumbMatch ? thumbMatch[1] : "",
+    platform: "threads",
+    downloads,
+  };
+}
+
+async function downloadThreads(url: string): Promise<VideoInfo> {
+  const methods = [
+    () => withRetry(() => threadsViaApi(url), 2, 1500),
+    () => withRetry(() => threadsViaSaveThreads(url), 2, 1500),
+  ];
+
+  let lastError: Error = new Error("All Threads methods failed");
+  for (const method of methods) {
+    try {
+      return await method();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Unknown error");
+    }
+  }
   throw new Error(`Threads download failed: ${lastError.message}`);
 }
+
+// ============================================================
+// MAIN POST HANDLER
+// ============================================================
 
 export async function POST(request: NextRequest) {
   try {
@@ -589,8 +581,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json<ApiResponse>(
         {
           success: false,
-          error:
-            "Unsupported platform. Please use TikTok, Threads, Facebook, or Twitter/X URLs.",
+          error: "Unsupported platform. Please use TikTok, Threads, Facebook, or Twitter/X URLs.",
         },
         { status: 400 }
       );
