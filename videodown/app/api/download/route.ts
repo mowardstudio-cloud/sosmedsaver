@@ -63,9 +63,29 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
       });
     }
 
+    // Prefer origin_cover (TikTok CDN) over cover (may be tikwm URL which is blocked)
+    // Filter out tikwm.com URLs for thumbnails as they block cross-origin requests
+    const getThumbnail = () => {
+      const candidates = [
+        videoData.origin_cover,
+        videoData.cover,
+        videoData.ai_dynamic_cover,
+      ].filter(Boolean);
+
+      for (const url of candidates) {
+        const absUrl = toAbsoluteUrl(url);
+        // Prefer non-tikwm URLs (TikTok CDN, etc.)
+        if (!absUrl.includes("tikwm.com")) {
+          return absUrl;
+        }
+      }
+      // Fallback to first available (even if tikwm)
+      return candidates.length > 0 ? toAbsoluteUrl(candidates[0]) : "";
+    };
+
     return {
       title: videoData.title || "TikTok Video",
-      thumbnail: toAbsoluteUrl(videoData.cover || videoData.origin_cover || ""),
+      thumbnail: getThumbnail(),
       duration: videoData.duration
         ? `${Math.floor(videoData.duration / 60)}:${String(videoData.duration % 60).padStart(2, "0")}`
         : undefined,
