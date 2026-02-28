@@ -142,7 +142,7 @@ export default function DownloadResult({ data }: DownloadResultProps) {
         {data.thumbnail && (
           <div className="relative w-full aspect-video bg-black/50">
             <Image
-              src={data.thumbnail}
+              src={`/api/image?url=${encodeURIComponent(data.thumbnail)}`}
               alt={data.title}
               fill
               className="object-cover opacity-90"
