@@ -97,11 +97,12 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
     if (downloads.length === 0) throw new Error("No download links found");
 
     // Prefer TikTok CDN URLs for thumbnail (tikwm.com blocks cross-origin)
+    // ai_dynamic_cover is usually the best quality thumbnail
     const getThumbnail = () => {
       const candidates = [
+        videoData.ai_dynamic_cover,
         videoData.origin_cover,
         videoData.cover,
-        videoData.ai_dynamic_cover,
       ].filter(Boolean);
 
       for (const u of candidates) {

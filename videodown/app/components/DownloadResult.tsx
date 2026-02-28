@@ -1,14 +1,49 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
-import { Download, Music, Video, Clock, User, ExternalLink, Loader2, CheckCircle, AlertCircle } from "lucide-react";
+import { Download, Music, Video, Clock, User, ExternalLink, Loader2, CheckCircle, AlertCircle, ImageOff } from "lucide-react";
 import { VideoInfo, VideoQuality } from "../types";
 import PlatformIcon from "./PlatformIcon";
 import { getPlatformName } from "../lib/utils";
 
 interface DownloadResultProps {
   data: VideoInfo;
+}
+
+// Thumbnail component with error handling
+function ThumbnailImage({ src, alt }: { src: string; alt: string }) {
+  const [error, setError] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  if (error) {
+    return (
+      <div className="w-full aspect-video bg-white/5 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-2 text-white/20">
+          <ImageOff size={24} />
+          <span className="text-xs">Thumbnail unavailable</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative w-full aspect-video bg-black/50 overflow-hidden">
+      {!loaded && (
+        <div className="absolute inset-0 shimmer" />
+      )}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={`/api/image?url=${encodeURIComponent(src)}`}
+        alt={alt}
+        className={`w-full h-full object-cover transition-opacity duration-300 ${loaded ? "opacity-90" : "opacity-0"}`}
+        onLoad={() => setLoaded(true)}
+        onError={() => setError(true)}
+      />
+      {loaded && (
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none" />
+      )}
+    </div>
+  );
 }
 
 function DownloadButton({ item, index, videoTitle }: { item: VideoQuality; index: number; videoTitle: string }) {
@@ -32,38 +67,19 @@ function DownloadButton({ item, index, videoTitle }: { item: VideoQuality; index
       // Use proxy API to force download
       const proxyUrl = `/api/proxy?url=${encodeURIComponent(item.url)}&filename=${encodeURIComponent(filename)}`;
 
-      // Check if proxy is accessible first with a HEAD request
-      const checkResponse = await fetch(proxyUrl, { method: "HEAD" }).catch(() => null);
+      // Use anchor click for streaming download
+      const a = document.createElement("a");
+      a.href = proxyUrl;
+      a.download = filename;
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
 
-      if (checkResponse && checkResponse.ok) {
-        // Use anchor click for streaming download (no memory buffering)
-        const a = document.createElement("a");
-        a.href = proxyUrl;
-        a.download = filename;
-        a.style.display = "none";
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-
-        setStatus("done");
-        setTimeout(() => setStatus("idle"), 3000);
-      } else {
-        // Proxy failed, try direct URL
-        const a = document.createElement("a");
-        a.href = item.url;
-        a.download = filename;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.style.display = "none";
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-
-        setStatus("done");
-        setTimeout(() => setStatus("idle"), 3000);
-      }
+      setStatus("done");
+      setTimeout(() => setStatus("idle"), 3000);
     } catch {
-      // Final fallback: open in new tab
+      // Fallback: open in new tab
       window.open(item.url, "_blank");
       setStatus("idle");
     }
@@ -148,16 +164,7 @@ export default function DownloadResult({ data }: DownloadResultProps) {
       <div className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden mb-4">
         {/* Thumbnail */}
         {data.thumbnail && (
-          <div className="relative w-full aspect-video bg-black/50">
-            <Image
-              src={`/api/image?url=${encodeURIComponent(data.thumbnail)}`}
-              alt={data.title}
-              fill
-              className="object-cover opacity-90"
-              unoptimized
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
-          </div>
+          <ThumbnailImage src={data.thumbnail} alt={data.title} />
         )}
 
         {/* Info */}
