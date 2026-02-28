@@ -34,20 +34,13 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
       return `https://www.tikwm.com${u.startsWith("/") ? "" : "/"}${u}`;
     };
 
-    if (videoData.hdplay) {
-      downloads.push({
-        label: "HD Video (No Watermark)",
-        url: toAbsoluteUrl(videoData.hdplay),
-        quality: "HD",
-        format: "mp4",
-      });
-    }
-
+    // Note: hdplay uses BVC2 codec (TikTok proprietary) which is not widely supported.
+    // We use 'play' (H.264) as the primary no-watermark option.
     if (videoData.play) {
       downloads.push({
-        label: "SD Video (No Watermark)",
+        label: "Video HD (No Watermark)",
         url: toAbsoluteUrl(videoData.play),
-        quality: "SD",
+        quality: "HD",
         format: "mp4",
       });
     }
