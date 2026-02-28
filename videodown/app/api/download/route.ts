@@ -38,14 +38,16 @@ function toAbsoluteUrl(u: string, base = "https://www.tikwm.com"): string {
   return `${base}${u.startsWith("/") ? "" : "/"}${u}`;
 }
 
-// TikTok downloader using tikwm API with retry
+// TikTok downloader with multiple API fallbacks
 async function downloadTikTok(url: string): Promise<VideoInfo> {
-  const fetchFromTikwm = async () => {
+  // Method 1: tikwm API
+  const fetchFromTikwm = async (): Promise<VideoInfo> => {
     const response = await axios.post(
       "https://www.tikwm.com/api/",
       new URLSearchParams({ url, count: "12", cursor: "0", web: "1", hd: "1" }),
       {
         ...axiosConfig,
+        timeout: 20000,
         headers: {
           ...axiosConfig.headers,
           "Content-Type": "application/x-www-form-urlencoded",
@@ -60,11 +62,7 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
       throw new Error(`tikwm API error: ${data.msg || "Unknown error"}`);
     }
 
-    return data.data;
-  };
-
-  try {
-    const videoData = await withRetry(fetchFromTikwm, 3, 2000);
+    const videoData = data.data;
     const downloads: VideoQuality[] = [];
 
     // Note: hdplay uses BVC2 codec (TikTok proprietary) which is not widely supported.
@@ -96,9 +94,7 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
       });
     }
 
-    if (downloads.length === 0) {
-      throw new Error("No download links found");
-    }
+    if (downloads.length === 0) throw new Error("No download links found");
 
     // Prefer TikTok CDN URLs for thumbnail (tikwm.com blocks cross-origin)
     const getThumbnail = () => {
@@ -125,11 +121,93 @@ async function downloadTikTok(url: string): Promise<VideoInfo> {
       platform: "tiktok",
       downloads,
     };
-  } catch (error) {
-    throw new Error(
-      `TikTok download failed: ${error instanceof Error ? error.message : "Unknown error"}`
+  };
+
+  // Method 2: musicaldown API (alternative)
+  const fetchFromMusicalDown = async (): Promise<VideoInfo> => {
+    // Get token first
+    const tokenResp = await axios.get("https://musicaldown.com/en", {
+      ...axiosConfig,
+      timeout: 15000,
+      headers: {
+        ...axiosConfig.headers,
+        Referer: "https://musicaldown.com/",
+      },
+    });
+
+    const tokenHtml = tokenResp.data as string;
+    const tokenMatch = tokenHtml.match(/name="([^"]+)"\s+value="([^"]+)"/g);
+    if (!tokenMatch) throw new Error("Could not get token");
+
+    const formData = new URLSearchParams();
+    formData.append("link", url);
+
+    // Extract hidden fields
+    const hiddenFields = tokenHtml.matchAll(/<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]+)"/g);
+    for (const field of hiddenFields) {
+      formData.append(field[1], field[2]);
+    }
+
+    const response = await axios.post(
+      "https://musicaldown.com/download",
+      formData,
+      {
+        ...axiosConfig,
+        timeout: 20000,
+        headers: {
+          ...axiosConfig.headers,
+          "Content-Type": "application/x-www-form-urlencoded",
+          Referer: "https://musicaldown.com/en",
+          Origin: "https://musicaldown.com",
+        },
+      }
     );
+
+    const html = response.data as string;
+    const downloads: VideoQuality[] = [];
+
+    // Extract video links
+    const videoMatches = html.matchAll(/href="(https:\/\/[^"]+\.mp4[^"]*)"[^>]*class="[^"]*btn[^"]*"/g);
+    for (const match of videoMatches) {
+      if (!downloads.find((d) => d.url === match[1])) {
+        downloads.push({
+          label: downloads.length === 0 ? "Video (No Watermark)" : "Video (With Watermark)",
+          url: match[1],
+          quality: downloads.length === 0 ? "HD" : "SD",
+          format: "mp4",
+        });
+      }
+    }
+
+    if (downloads.length === 0) throw new Error("No download links found");
+
+    const thumbMatch = html.match(/src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/);
+
+    return {
+      title: "TikTok Video",
+      thumbnail: thumbMatch ? thumbMatch[1] : "",
+      platform: "tiktok",
+      downloads,
+    };
+  };
+
+  const methods = [
+    () => withRetry(fetchFromTikwm, 2, 2000),
+    () => withRetry(fetchFromMusicalDown, 2, 1000),
+  ];
+
+  let lastError: Error = new Error("All methods failed");
+
+  for (const method of methods) {
+    try {
+      return await method();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Unknown error");
+      continue;
+    }
   }
+
+  throw new Error(`TikTok download failed: ${lastError.message}`);
 }
 
 // Twitter/X downloader with multiple fallback APIs
