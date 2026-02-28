@@ -1,5 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export async function HEAD(request: NextRequest) {
+  // HEAD request to check if proxy URL is accessible
+  const { searchParams } = new URL(request.url);
+  const videoUrl = searchParams.get("url");
+
+  if (!videoUrl) {
+    return new NextResponse(null, { status: 400 });
+  }
+
+  try {
+    const decodedUrl = decodeURIComponent(videoUrl);
+    let absoluteUrl = decodedUrl;
+    if (!decodedUrl.startsWith("http://") && !decodedUrl.startsWith("https://")) {
+      absoluteUrl = `https://www.tikwm.com${decodedUrl.startsWith("/") ? "" : "/"}${decodedUrl}`;
+    }
+
+    try {
+      new URL(absoluteUrl);
+    } catch {
+      return new NextResponse(null, { status: 400 });
+    }
+
+    return new NextResponse(null, { status: 200 });
+  } catch {
+    return new NextResponse(null, { status: 500 });
+  }
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const videoUrl = searchParams.get("url");

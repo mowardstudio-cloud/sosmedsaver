@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { Download, Music, Video, Clock, User, ExternalLink, Loader2, CheckCircle } from "lucide-react";
+import { Download, Music, Video, Clock, User, ExternalLink, Loader2, CheckCircle, AlertCircle } from "lucide-react";
 import { VideoInfo, VideoQuality } from "../types";
 import PlatformIcon from "./PlatformIcon";
 import { getPlatformName } from "../lib/utils";
@@ -26,36 +26,44 @@ function DownloadButton({ item, index, videoTitle }: { item: VideoQuality; index
         .replace(/[^a-zA-Z0-9\s]/g, "")
         .trim()
         .replace(/\s+/g, "_")
-        .slice(0, 50);
+        .slice(0, 50) || "video";
       const filename = `${cleanTitle}_${item.quality}.${ext}`;
 
       // Use proxy API to force download
       const proxyUrl = `/api/proxy?url=${encodeURIComponent(item.url)}&filename=${encodeURIComponent(filename)}`;
 
-      const response = await fetch(proxyUrl);
+      // Check if proxy is accessible first with a HEAD request
+      const checkResponse = await fetch(proxyUrl, { method: "HEAD" }).catch(() => null);
 
-      if (!response.ok) {
-        throw new Error("Download failed");
+      if (checkResponse && checkResponse.ok) {
+        // Use anchor click for streaming download (no memory buffering)
+        const a = document.createElement("a");
+        a.href = proxyUrl;
+        a.download = filename;
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        setStatus("done");
+        setTimeout(() => setStatus("idle"), 3000);
+      } else {
+        // Proxy failed, try direct URL
+        const a = document.createElement("a");
+        a.href = item.url;
+        a.download = filename;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        setStatus("done");
+        setTimeout(() => setStatus("idle"), 3000);
       }
-
-      const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-
-      // Create a temporary anchor element to trigger download
-      const a = document.createElement("a");
-      a.href = blobUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-
-      // Clean up the blob URL
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-
-      setStatus("done");
-      setTimeout(() => setStatus("idle"), 3000);
     } catch {
-      // Fallback: open in new tab
+      // Final fallback: open in new tab
       window.open(item.url, "_blank");
       setStatus("idle");
     }
@@ -95,7 +103,7 @@ function DownloadButton({ item, index, videoTitle }: { item: VideoQuality; index
         )}
         {status === "downloading" && (
           <>
-            <span className="text-xs text-white/40 hidden sm:block">Downloading...</span>
+            <span className="text-xs text-white/40 hidden sm:block">Preparing...</span>
             <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center">
               <Loader2 size={14} className="animate-spin text-white/60" />
             </div>
@@ -113,7 +121,7 @@ function DownloadButton({ item, index, videoTitle }: { item: VideoQuality; index
           <>
             <span className="text-xs text-red-400/70 hidden sm:block">Failed</span>
             <div className="w-8 h-8 rounded-lg bg-red-500/20 flex items-center justify-center">
-              <Download size={14} className="text-red-400" />
+              <AlertCircle size={14} className="text-red-400" />
             </div>
           </>
         )}
